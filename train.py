@@ -52,36 +52,30 @@ def load_checkpoint(checkpoint_path, model, optimizer):
 def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
     print("Saving model and optimizer state at iteration {} to {}".format(
           iteration, filepath))
-    model_for_saving = WaveGlow(**waveglow_config).cuda()
+    model_for_saving = WaveGlow(**waveglow_config)
     model_for_saving.load_state_dict(model.state_dict())
     torch.save({'model': model_for_saving,
                 'iteration': iteration,
                 'optimizer': optimizer.state_dict(),
                 'learning_rate': learning_rate}, filepath)
 
-def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
+def train( group_name, output_directory, epochs, learning_rate,
           sigma, iters_per_checkpoint, batch_size, seed, fp16_run,
           checkpoint_path, with_tensorboard):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     #=====START: ADDED FOR DISTRIBUTED======
-    if num_gpus > 1:
-        init_distributed(rank, num_gpus, group_name, **dist_config)
+   
     #=====END:   ADDED FOR DISTRIBUTED======
 
     criterion = WaveGlowLoss(sigma)
-    model = WaveGlow(**waveglow_config).cuda()
+    model = WaveGlow(**waveglow_config)
 
     #=====START: ADDED FOR DISTRIBUTED======
-    if num_gpus > 1:
-        model = apply_gradient_allreduce(model)
+    
     #=====END:   ADDED FOR DISTRIBUTED======
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    if fp16_run:
-        from apex import amp
-        model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
 
     # Load checkpoint if one exists
     iteration = 0
@@ -92,7 +86,7 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
 
     trainset = Mel2Samp(**data_config)
     # =====START: ADDED FOR DISTRIBUTED======
-    train_sampler = DistributedSampler(trainset) if num_gpus > 1 else None
+    train_sampler = None
     # =====END:   ADDED FOR DISTRIBUTED======
     train_loader = DataLoader(trainset, num_workers=1, shuffle=False,
                               sampler=train_sampler,
@@ -101,15 +95,13 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
                               drop_last=True)
 
     # Get shared output_directory ready
-    if rank == 0:
-        if not os.path.isdir(output_directory):
-            os.makedirs(output_directory)
-            os.chmod(output_directory, 0o775)
-        print("output directory", output_directory)
+    
+    if not os.path.isdir(output_directory):
+        os.makedirs(output_directory)
+        os.chmod(output_directory, 0o775)
+    print("output directory", output_directory)
 
-    if with_tensorboard and rank == 0:
-        from tensorboardX import SummaryWriter
-        logger = SummaryWriter(os.path.join(output_directory, 'logs'))
+
 
     model.train()
     epoch_offset = max(0, int(iteration / len(train_loader)))
@@ -120,33 +112,20 @@ def train(num_gpus, rank, group_name, output_directory, epochs, learning_rate,
             model.zero_grad()
 
             mel, audio = batch
-            mel = torch.autograd.Variable(mel.cuda())
-            audio = torch.autograd.Variable(audio.cuda())
             outputs = model((mel, audio))
 
             loss = criterion(outputs)
-            if num_gpus > 1:
-                reduced_loss = reduce_tensor(loss.data, num_gpus).item()
-            else:
-                reduced_loss = loss.item()
+            reduced_loss = loss.item()
 
-            if fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
-
+            loss.backward()
             optimizer.step()
 
             print("{}:\t{:.9f}".format(iteration, reduced_loss))
-            if with_tensorboard and rank == 0:
-                logger.add_scalar('training_loss', reduced_loss, i + len(train_loader) * epoch)
 
             if (iteration % iters_per_checkpoint == 0):
-                if rank == 0:
-                    checkpoint_path = "{}/waveglow_{}".format(
+                checkpoint_path = "{}/waveglow_{}".format(
                         output_directory, iteration)
-                    save_checkpoint(model, optimizer, learning_rate, iteration,
+                save_checkpoint(model, optimizer, learning_rate, iteration,
                                     checkpoint_path)
 
             iteration += 1
@@ -172,17 +151,6 @@ if __name__ == "__main__":
     dist_config = config["dist_config"]
     global waveglow_config
     waveglow_config = config["waveglow_config"]
-
-    num_gpus = torch.cuda.device_count()
-    if num_gpus > 1:
-        if args.group_name == '':
-            print("WARNING: Multiple GPUs detected but no distributed group set")
-            print("Only running 1 GPU.  Use distributed.py for multiple GPUs")
-            num_gpus = 1
-
-    if num_gpus == 1 and args.rank != 0:
-        raise Exception("Doing single GPU training on rank > 0")
-
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = False
-    train(num_gpus, args.rank, args.group_name, **train_config)
+    train(args.group_name, **train_config)
