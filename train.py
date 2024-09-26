@@ -70,13 +70,14 @@ def train( group_name, output_directory, epochs, learning_rate,
 
     criterion = WaveGlowLoss(sigma)
     model = WaveGlow(**waveglow_config)
-
+    model = model.cuda()
+    criterion = criterion.cuda()
     #=====START: ADDED FOR DISTRIBUTED======
     
     #=====END:   ADDED FOR DISTRIBUTED======
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
+    
     # Load checkpoint if one exists
     iteration = 0
     if checkpoint_path != "":
@@ -112,6 +113,8 @@ def train( group_name, output_directory, epochs, learning_rate,
             model.zero_grad()
 
             mel, audio = batch
+            mel = mel.cuda()
+            audio = audio.cuda()
             outputs = model((mel, audio))
 
             loss = criterion(outputs)
