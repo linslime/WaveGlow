@@ -37,9 +37,6 @@ def main(mel_files, waveglow_path, sigma, output_dir, sampling_rate, is_fp16,
     waveglow = torch.load(waveglow_path)['model']
     waveglow = waveglow.remove_weightnorm(waveglow)
     waveglow.cuda().eval()
-    if is_fp16:
-        from apex import amp
-        waveglow, _ = amp.initialize(waveglow, [], opt_level="O3")
 
     if denoiser_strength > 0:
         denoiser = Denoiser(waveglow).cuda()
@@ -49,7 +46,6 @@ def main(mel_files, waveglow_path, sigma, output_dir, sampling_rate, is_fp16,
         mel = torch.load(file_path)
         mel = torch.autograd.Variable(mel.cuda())
         mel = torch.unsqueeze(mel, 0)
-        mel = mel.half() if is_fp16 else mel
         with torch.no_grad():
             audio = waveglow.infer(mel, sigma=sigma)
             if denoiser_strength > 0:
